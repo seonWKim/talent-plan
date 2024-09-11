@@ -1,28 +1,32 @@
 use std::collections::HashMap;
 
+/// In memory kv store
+#[derive(Default)]
 pub struct KvStore {
     map: HashMap<String, String>,
 }
 
+/// KvStore implementation
 impl KvStore {
+    /// Creates a KV store
     pub fn new() -> Self {
         Self {
-            map: HashMap::new()
+            map: HashMap::new(),
         }
     }
 
+    /// Get a value using the key
     pub fn get(&self, key: String) -> Option<String> {
-        match self.map.get(&key) {
-            Some(v) => Some(v.to_owned()),
-            None => None
-        }
+        self.map.get(&key).map(|v| v.to_owned())
     }
 
-    pub fn set(&self, key: String, value: String) {
-        self.set(key, value);
+    /// Set a value
+    pub fn set(&mut self, key: String, value: String) {
+        self.map.insert(key, value);
     }
 
-    pub fn remove(&self, key: String) {
-        self.remove(key);
+    /// Remove a value with the key
+    pub fn remove(&mut self, key: String) {
+        self.map.remove(&key);
     }
 }
