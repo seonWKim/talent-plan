@@ -307,7 +307,7 @@ to know where to go next on that path? We've got [some ideas][n].
 
 <!-- project links -->
 
-[p1]: ../projects/project-1/README.md
+[p1]: ../projects/project-1-new/README.md
 [p2]: ../projects/project-2/README.md
 [p3]: ../projects/project-3/README.md
 [p4]: ../projects/project-4/README.md
