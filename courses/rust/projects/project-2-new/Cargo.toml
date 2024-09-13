@@ -1,0 +1,14 @@
+[package]
+name = "kvs"
+version = "0.1.0"
+authors = ["Kim Seon Woo <seonwoo960000.kim@gmail.com>"]
+description = "A key-value store"
+edition = "2021"
+
+[dependencies]
+clap = "2.32.0"
+structopt = "0.3.25"
+
+[dev-dependencies]
+assert_cmd = "0.11.0"
+predicates = "1.0.0"
