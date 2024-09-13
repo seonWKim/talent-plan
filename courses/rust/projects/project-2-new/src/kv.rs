@@ -7,7 +7,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// In memory kv store
-#[derive(Default)]
 pub struct KvStore {
     dir_path: PathBuf,
     key_offset: HashMap<String, u64>,
@@ -16,8 +15,8 @@ pub struct KvStore {
 
 #[derive(Serialize, Deserialize)]
 pub struct Record {
-    key: String,
-    value: String,
+    k: String, // key
+    v: String, // value
     r: bool, // remove flag
 }
 
@@ -39,19 +38,25 @@ impl KvStore {
     }
 
     /// Get a value using the key
-    pub fn get(&self, key: String) -> Result<Option<String>, KvStoreError> {
+    pub fn get(&mut self, key: String) -> Result<Option<String>, KvStoreError> {
         let offset = match self.key_offset.get(&key) {
             Some(&offset) => offset,
             None => return Ok(None),
         };
 
         let record = self.read_offset(offset)?;
-        Ok(Some(record.value))
+        Ok(Some(record.v))
     }
 
     /// Set a value
     pub fn set(&mut self, key: String, value: String) -> Result<(), KvStoreError> {
-        self.append_to_wal(key, value, false)
+        match self.append_to_wal(key.to_owned(), value, false) {
+            Ok(offset) => {
+                self.key_offset.insert(key, offset);
+                Ok(())
+            }
+            Err(_) => Err(KvStoreError::WalAppendFailed)
+        }
     }
 
     /// Remove a value with the key
@@ -66,56 +71,40 @@ impl KvStore {
         Ok(())
     }
 
-    fn append_to_wal(&mut self, key: String, value: String, r: bool) -> Result<(), KvStoreError> {
-        let record = Record { key: key.clone(), value, r };
+    fn append_to_wal(&mut self, key: String, value: String, r: bool) -> Result<u64, KvStoreError> {
+        let record = Record { k: key.to_owned(), v: value, r };
         let serialized = serde_json::to_string(&record)?;
 
-        match self.wal.append(&serialized.as_bytes()) {
-            Ok(offset) => {
-                self.key_offset.insert(key.to_string(), offset);
-                Ok(())
-            }
-            Err(e) => Err(e)
-        }
+        self.wal.append(&serialized.as_bytes())
     }
 
     fn build_index(&mut self) -> Result<(), KvStoreError> {
-        if self.wal.get_path().is_none() {
-            return Ok(());
-        }
-
-        let wal_path = self.wal.get_path().clone().unwrap();
-        let mut file = OpenOptions::new().read(true).open(wal_path)?;
         let mut offset = 0;
-
         loop {
-            let mut length_bytes = [0u8; 2];
-            if file.read_exact(&mut length_bytes).is_err() {
-                break;
+            match self.wal.read_offset(offset) {
+                Ok(wal_row) => {
+                    let length = wal_row.length.len();
+                    let value = wal_row.value;
+                    let record: Record = serde_json::from_slice(&value)?;
+
+                    if record.r {
+                        self.key_offset.remove(&record.k.to_owned());
+                    } else {
+                        self.key_offset.insert(record.k.to_owned(), offset);
+                    }
+                    offset += (length + value.len()) as u64;
+                }
+                Err(_) => break,
             }
-
-            let length = u16::from_be_bytes(length_bytes) as usize;
-
-            let mut buffer = vec![0u8; length];
-            file.read_exact(&mut buffer)?;
-
-            let record: Record = serde_json::from_slice(&buffer)?;
-            if record.r {
-                self.key_offset.remove(&record.key);
-            } else {
-                self.key_offset.insert(record.key, offset);
-            }
-
-            offset = file.seek(SeekFrom::Current(0))?
         }
 
         Ok(())
     }
 
-    fn read_offset(&self, offset: u64) -> Result<Record, KvStoreError> {
+    fn read_offset(&mut self, offset: u64) -> Result<Record, KvStoreError> {
         match self.wal.read_offset(offset) {
-            Ok(buffer) => {
-                let record: Record = serde_json::from_slice(&buffer)?;
+            Ok(wal_row) => {
+                let record: Record = serde_json::from_slice(&wal_row.value)?;
                 Ok(record)
             }
             Err(e) => Err(e)
@@ -143,6 +132,10 @@ pub enum KvStoreError {
     /// Wal file not found
     #[fail(display = "Wal file not found")]
     WalNotFound,
+
+    /// Wal append fail
+    #[fail(display = "Wal append failed")]
+    WalAppendFailed,
 
     /// IO error
     #[fail(display = "IO error: {}", _0)]
