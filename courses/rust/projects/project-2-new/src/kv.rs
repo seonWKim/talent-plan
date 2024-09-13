@@ -58,7 +58,14 @@ impl KvStore {
 
     /// Remove a value with the key
     pub fn remove(&mut self, key: String) -> Result<(), KvStoreError> {
-        self.append_to_wal(key, "".to_string(), true)
+        if !self.key_offset.contains_key(&key) {
+            println!("Key not found");
+            return Err(KvStoreError::InvalidKey { key })
+        }
+
+        self.append_to_wal(key.to_owned(), "".to_string(), true)?;
+        self.key_offset.remove(&key);
+        Ok(())
     }
 
     fn append_to_wal(&mut self, key: String, value: String, r: bool) -> Result<(), KvStoreError> {
