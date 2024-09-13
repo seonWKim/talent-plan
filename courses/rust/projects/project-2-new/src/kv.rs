@@ -15,7 +15,7 @@ pub struct KvStore {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Record {
+pub struct Record {
     key: String,
     value: String,
     r: bool, // remove flag
@@ -45,9 +45,7 @@ impl KvStore {
             None => return Ok(None),
         };
 
-        let mut file = OpenOptions::new().read(true).open(&self.wal.path.clone().unwrap())?;
-        let record = self.read_offset(&mut file, offset)?;
-
+        let record = self.read_offset(offset)?;
         Ok(Some(record.value))
     }
 
@@ -60,7 +58,7 @@ impl KvStore {
     pub fn remove(&mut self, key: String) -> Result<(), KvStoreError> {
         if !self.key_offset.contains_key(&key) {
             println!("Key not found");
-            return Err(KvStoreError::InvalidKey { key })
+            return Err(KvStoreError::InvalidKey { key });
         }
 
         self.append_to_wal(key.to_owned(), "".to_string(), true)?;
@@ -69,30 +67,24 @@ impl KvStore {
     }
 
     fn append_to_wal(&mut self, key: String, value: String, r: bool) -> Result<(), KvStoreError> {
-        if self.wal.path.is_none() {
-            return Ok(());
-        }
-
-        let wal_path = self.wal.path.clone().unwrap();
-        let mut file = OpenOptions::new().append(true).open(&wal_path)?;
-        let offset = file.seek(SeekFrom::End(0))?;
         let record = Record { key: key.clone(), value, r };
         let serialized = serde_json::to_string(&record)?;
-        let serialized_len = (serialized.len() as u16).to_be_bytes();
 
-        file.write_all(&serialized_len)?;
-        file.write_all(&serialized.as_bytes())?;
-
-        self.key_offset.insert(key.to_string(), offset);
-        Ok(())
+        match self.wal.append(&serialized.as_bytes()) {
+            Ok(offset) => {
+                self.key_offset.insert(key.to_string(), offset);
+                Ok(())
+            }
+            Err(e) => Err(e)
+        }
     }
 
     fn build_index(&mut self) -> Result<(), KvStoreError> {
-        if self.wal.path.is_none() {
+        if self.wal.get_path().is_none() {
             return Ok(());
         }
 
-        let wal_path = self.wal.path.clone().unwrap();
+        let wal_path = self.wal.get_path().clone().unwrap();
         let mut file = OpenOptions::new().read(true).open(wal_path)?;
         let mut offset = 0;
 
@@ -120,19 +112,14 @@ impl KvStore {
         Ok(())
     }
 
-    fn read_offset(&self, file: &mut File, offset: u64) -> Result<Record, KvStoreError> {
-        file.seek(SeekFrom::Start(offset))?;
-
-        let mut length_bytes = [0u8; 2];
-        file.read_exact(&mut length_bytes)?;
-
-        let length = u16::from_be_bytes(length_bytes) as usize;
-
-        let mut buffer = vec![0u8; length];
-        file.read_exact(&mut buffer)?;
-
-        let record: Record = serde_json::from_slice(&buffer)?;
-        Ok(record)
+    fn read_offset(&self, offset: u64) -> Result<Record, KvStoreError> {
+        match self.wal.read_offset(offset) {
+            Ok(buffer) => {
+                let record: Record = serde_json::from_slice(&buffer)?;
+                Ok(record)
+            }
+            Err(e) => Err(e)
+        }
     }
 }
 
@@ -152,6 +139,10 @@ pub enum KvStoreError {
         /// offset
         offset: u64
     },
+
+    /// Wal file not found
+    #[fail(display = "Wal file not found")]
+    WalNotFound,
 
     /// IO error
     #[fail(display = "IO error: {}", _0)]
