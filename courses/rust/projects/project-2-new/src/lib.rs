@@ -4,3 +4,4 @@
 pub use kv::{KvStore, KvStoreError};
 
 mod kv;
+mod wal;

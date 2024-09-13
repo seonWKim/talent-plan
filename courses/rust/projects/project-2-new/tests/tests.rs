@@ -1,5 +1,4 @@
 use assert_cmd::prelude::*;
-use clap::Error;
 use kvs::{KvStore, KvStoreError};
 use predicates::ord::eq;
 use predicates::str::{contains, is_empty, PredicateStrExt};
