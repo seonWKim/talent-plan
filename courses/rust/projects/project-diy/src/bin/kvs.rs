@@ -1,7 +1,7 @@
-use kvs::KvStore;
 use std::path::PathBuf;
 use std::process::exit;
 use structopt::StructOpt;
+use kvs::engines::kvs::KvStore;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "kvs", about = "A key-value store")]

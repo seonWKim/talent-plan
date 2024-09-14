@@ -1,7 +1,3 @@
-#![deny(missing_docs)]
-//! A simple key/value store.
+pub mod engines;
+pub mod error;
 
-pub use kv::{KvStore, KvStoreError};
-
-mod kv;
-mod wal;

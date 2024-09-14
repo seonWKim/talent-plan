@@ -8,8 +8,11 @@
       <sourceFolder url="file://$MODULE_DIR$/courses/rust/projects/project-1-new/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/courses/rust/projects/project-diy/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/courses/rust/projects/project-diy/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/courses/rust/projects/project-2/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/courses/rust/projects/project-2/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/courses/rust/projects/project-1-new/target" />
       <excludeFolder url="file://$MODULE_DIR$/courses/rust/projects/project-diy/target" />
+      <excludeFolder url="file://$MODULE_DIR$/courses/rust/projects/project-2/target" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
