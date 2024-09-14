@@ -4,7 +4,7 @@ use std::process::exit;
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "kvs", about = "A key-value store")]
+#[structopt(name = "kvs-client", about = "A key-value store")]
 struct Config {
     #[structopt(subcommand)]
     cmd: Command,
@@ -49,9 +49,9 @@ fn main() {
         Command::Rm { key } => match kvs.remove(key) {
             Ok(v) => {}
             Err(_) => {
-                println!("Key not found"); 
+                println!("Key not found");
                 exit(1)
-            },
+            }
         },
     }
 }
