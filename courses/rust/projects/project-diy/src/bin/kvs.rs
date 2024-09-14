@@ -1,7 +1,7 @@
+use kvs::engines::kvs::KvStore;
 use std::path::PathBuf;
 use std::process::exit;
 use structopt::StructOpt;
-use kvs::engines::kvs::KvStore;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "kvs", about = "A key-value store")]
@@ -48,7 +48,10 @@ fn main() {
         },
         Command::Rm { key } => match kvs.remove(key) {
             Ok(v) => {}
-            Err(_) => exit(1),
+            Err(_) => {
+                println!("Key not found"); 
+                exit(1)
+            },
         },
     }
 }

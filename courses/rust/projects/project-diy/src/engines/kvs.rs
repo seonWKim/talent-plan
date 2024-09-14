@@ -1,271 +1,330 @@
+use crate::error;
 use crate::error::KvsError;
+use error::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs;
-use std::fs::{metadata, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use serde_json::Deserializer;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsStr;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::{fs, io};
 
-/// In memory kv store
+const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
+
 pub struct KvStore {
-    dir_path: PathBuf,
-    key_offset: HashMap<String, u64>,
-    wal: Wal,
+    // directory for the log and other data
+    path: PathBuf,
+
+    // map for generation number to the file reader
+    readers: HashMap<u64, BufReaderWithPos<File>>,
+
+    // writer of the current log
+    writer: BufWriterWithPos<File>,
+
+    // current generation number
+    current_gen: u64,
+
+    // key to command position map
+    index: BTreeMap<String, CommandPos>,
+
+    // the size of data that can be reduced when compacted
+    uncompacted: u64,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct Record {
-    k: String, // key
-    v: String, // value
-    r: bool,   // remove flag
-}
-
-/// KvStore implementation
 impl KvStore {
-    fn new(path: PathBuf) -> Self {
-        KvStore {
-            dir_path: path.clone(),
-            key_offset: HashMap::new(),
-            wal: Wal::initialize(path),
+    pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
+        let path = path.into();
+        fs::create_dir_all(&path)?;
+
+        let mut readers = HashMap::new();
+        let mut index = BTreeMap::new();
+
+        let gen_list = sorted_gen_list(&path)?;
+        let mut uncompacted = 0;
+
+        for &gen in &gen_list {
+            let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?)?;
+            uncompacted += load(gen, &mut reader, &mut index)?;
+            readers.insert(gen, reader);
         }
+
+        let current_gen = gen_list.last().unwrap_or(&0) + 1;
+        let writer = new_log_file(&path, current_gen, &mut readers)?;
+
+        Ok(KvStore {
+            path,
+            readers,
+            writer,
+            current_gen,
+            index,
+            uncompacted,
+        })
     }
 
-    /// Creates a KV store
-    pub fn open(dir_path: &Path) -> Result<KvStore, KvsError> {
-        let mut store = KvStore::new(dir_path.to_path_buf());
-        store.build_index()?;
-        Ok(store)
+    pub fn set(&mut self, key: String, value: String) -> Result<()> {
+        let cmd = Command::set(key, value);
+        let pos = self.writer.pos;
+        serde_json::to_writer(&mut self.writer, &cmd)?;
+        self.writer.flush()?;
+        if let Command::Set { key, .. } = cmd {
+            if let Some(old_cmd) = self
+                .index
+                .insert(key, (self.current_gen, pos..self.writer.pos).into())
+            {
+                self.uncompacted += old_cmd.len;
+            }
+        }
+
+        if self.uncompacted > COMPACTION_THRESHOLD {
+            self.compact()?;
+        }
+        Ok(())
     }
 
-    /// Get a value using the key
-    pub fn get(&mut self, key: String) -> Result<Option<String>, KvsError> {
-        if let Some(&offset) = self.key_offset.get(&key) {
-            let record = self.read_offset(offset)?;
-            Ok(Some(record.v))
+    pub fn get(&mut self, key: String) -> Result<Option<String>> {
+        if let Some(cmd_pos) = self.index.get(&key) {
+            let reader = self
+                .readers
+                .get_mut(&cmd_pos.gen)
+                .expect("Cannot find log reader");
+            reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+            let cmd_reader = reader.take(cmd_pos.len);
+            if let Command::Set { value, .. } = serde_json::from_reader(cmd_reader)? {
+                Ok(Some(value))
+            } else {
+                Err(KvsError::UnexpectedCommandType)
+            }
         } else {
             Ok(None)
         }
     }
 
-    /// Set a value
-    pub fn set(&mut self, key: String, value: String) -> Result<(), KvsError> {
-        match self.append_to_wal(key.to_owned(), value, false) {
-            Ok(offset) => {
-                self.key_offset.insert(key, offset);
-                Ok(())
+    pub fn remove(&mut self, key: String) -> Result<()> {
+        if self.index.contains_key(&key) {
+            let cmd = Command::remove(key);
+            serde_json::to_writer(&mut self.writer, &cmd)?;
+            self.writer.flush()?;
+            if let Command::Remove { key } = cmd {
+                let old_cmd = self.index.remove(&key).expect("key not found");
+                self.uncompacted += old_cmd.len;
             }
-            Err(_) => Err(KvsError::KeyNotFound),
+            Ok(())
+        } else {
+            Err(KvsError::KeyNotFound)
         }
     }
 
-    /// Remove a value with the key
-    pub fn remove(&mut self, key: String) -> Result<(), KvsError> {
-        if !self.key_offset.contains_key(&key) {
-            println!("Key not found");
-            return Err(KvsError::KeyNotFound);
-        }
+    fn compact(&mut self) -> Result<()> {
+        // current_gen + 1 is used by the compaction
+        let compaction_gen = self.current_gen + 1;
+        self.current_gen += 2;
+        self.writer = self.new_log_file(self.current_gen)?;
 
-        self.append_to_wal(key.to_owned(), "".to_string(), true)?;
-        self.key_offset.remove(&key);
-        Ok(())
-    }
+        let mut compaction_writer = self.new_log_file(compaction_gen)?;
 
-    fn append_to_wal(&mut self, key: String, value: String, r: bool) -> Result<u64, KvsError> {
-        let record = Record {
-            k: key.to_owned(),
-            v: value,
-            r,
-        };
-        let serialized = serde_json::to_string(&record)?;
-        let serialized_bytes = serialized.as_bytes();
+        let mut new_pos = 0;
+        for cmd_pos in &mut self.index.values_mut() {
+            let reader = self
+                .readers
+                .get_mut(&cmd_pos.gen)
+                .expect("Cannot find log reader");
 
-        if self.wal.size + serialized_bytes.len() as u64 > 1_000_000 {
-            self.compact()?;
-        }
-
-        self.wal.append(&serialized_bytes)
-    }
-
-    fn compact(&mut self) -> Result<(), KvsError> {
-        // create a new wal
-        let mut new_wal = Wal::new(self.dir_path.clone());
-
-        // append to new wal
-        for (_, &offset) in &self.key_offset {
-            let row = self.wal.read_offset(offset)?;
-            new_wal.append(row.value.as_slice())?;
-        }
-
-        let old_wal_path = &self.wal.get_path();
-        self.wal = new_wal;
-        fs::remove_file(old_wal_path)?;
-
-        Ok(())
-    }
-
-    fn build_index(&mut self) -> Result<(), KvsError> {
-        let mut offset = 0;
-        loop {
-            match self.wal.read_offset(offset) {
-                Ok(wal_row) => {
-                    let value = wal_row.value;
-                    let record: Record = serde_json::from_slice(&value)?;
-
-                    if record.r {
-                        self.key_offset.remove(&record.k.to_owned());
-                    } else {
-                        self.key_offset.insert(record.k.to_owned(), offset);
-                    }
-                    offset += (wal_row.length.len() + value.len()) as u64;
-                }
-                Err(_) => break,
+            if reader.pos != cmd_pos.pos {
+                reader.seek(SeekFrom::Start(cmd_pos.pos))?;
             }
+
+            let mut entry_reader = reader.take(cmd_pos.len);
+            let len = io::copy(&mut entry_reader, &mut compaction_writer)?;
+            *cmd_pos = (compaction_gen, new_pos..new_pos + len).into();
+            new_pos += len;
         }
+        compaction_writer.flush()?;
 
-        Ok(())
-    }
-
-    fn read_offset(&mut self, offset: u64) -> Result<Record, KvsError> {
-        match self.wal.read_offset(offset) {
-            Ok(wal_row) => {
-                let record: Record = serde_json::from_slice(&wal_row.value)?;
-                Ok(record)
-            }
-            Err(e) => Err(e),
-        }
-    }
-}
-
-pub struct Wal {
-    pub(crate) size: u64,
-    path: PathBuf,
-    file: Arc<Mutex<File>>,
-}
-
-pub struct WalRow {
-    pub length: Vec<u8>,
-    pub value: Vec<u8>,
-}
-
-impl Wal {
-    // supports single wal file
-    pub(crate) fn new(dir_path: PathBuf) -> Self {
-        let next_index = fs::read_dir(&dir_path)
-            .expect("Failed to read directory")
-            .filter_map(|entry| {
-                entry
-                    .ok()?
-                    .path()
-                    .file_name()?
-                    .to_str()?
-                    .strip_prefix("wal.")?
-                    .parse::<u64>()
-                    .ok()
-            })
-            .max()
-            .map_or(0, |index| index + 1);
-
-        let wal_file = dir_path.join(format!("wal.{}", next_index));
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&wal_file)
-            .expect("Unable to open wal file");
-        Wal {
-            size: 0,
-            path: wal_file,
-            file: Arc::new(Mutex::new(file)),
-        }
-    }
-
-    pub fn initialize(dir_path: PathBuf) -> Wal {
-        let mut wal_files: Vec<PathBuf> = fs::read_dir(&dir_path)
-            .expect("Failed to read directory")
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                if path.is_file() && path.file_name()?.to_str()?.starts_with("wal.") {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
+        // remove stale log files
+        let stale_gens: Vec<u64> = self
+            .readers
+            .keys()
+            .filter(|&&gen| gen < compaction_gen)
+            .cloned()
             .collect();
 
-        wal_files.sort_by_key(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.split('.').nth(1))
-                .and_then(|postfix| postfix.parse::<u64>().ok())
-                .unwrap_or(0)
-        });
+        for stale_gen in stale_gens {
+            self.readers.remove(&stale_gen);
+            fs::remove_file(log_path(&self.path, stale_gen))?;
+        }
 
-        if let Some(wal_file) = wal_files.pop() {
-            let size = metadata(&wal_file)
-                .expect("Unable to get file metadata")
-                .len();
-            let file = OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(&wal_file)
-                .expect("Unable to open wal file");
-            Wal {
-                size,
-                path: wal_file,
-                file: Arc::new(Mutex::new(file)),
+        self.uncompacted = 0;
+        Ok(())
+    }
+
+    fn new_log_file(&mut self, gen: u64) -> Result<BufWriterWithPos<File>> {
+        new_log_file(&self.path, gen, &mut self.readers)
+    }
+}
+
+fn new_log_file(
+    path: &Path,
+    gen: u64,
+    readers: &mut HashMap<u64, BufReaderWithPos<File>>,
+) -> Result<BufWriterWithPos<File>> {
+    let path = log_path(&path, gen);
+    let writer = BufWriterWithPos::new(
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open(&path)?,
+    )?;
+
+    readers.insert(gen, BufReaderWithPos::new(File::open(&path)?)?);
+    Ok(writer)
+}
+
+fn sorted_gen_list(path: &PathBuf) -> Result<Vec<u64>> {
+    let mut gen_list: Vec<u64> = fs::read_dir(&path)?
+        .flat_map(|res| -> Result<_> { Ok(res?.path()) })
+        .filter(|path| path.is_file() && path.extension() == Some("log".as_ref()))
+        .flat_map(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .map(|s| s.trim_end_matches(".log"))
+                .map(str::parse::<u64>)
+        })
+        .flatten()
+        .collect();
+
+    gen_list.sort_unstable();
+    Ok(gen_list)
+}
+
+fn load(
+    gen: u64,
+    reader: &mut BufReaderWithPos<File>,
+    index: &mut BTreeMap<String, CommandPos>,
+) -> Result<u64> {
+    let mut pos = reader.seek(SeekFrom::Start(0))?;
+    let mut stream = Deserializer::from_reader(reader).into_iter::<Command>();
+    let mut uncompacted = 0; // number of bytes that can be saved after a compaction.
+    while let Some(cmd) = stream.next() {
+        let new_pos = stream.byte_offset() as u64;
+        match cmd? {
+            Command::Set { key, .. } => {
+                if let Some(old_cmd) = index.insert(key, (gen, pos..new_pos).into()) {
+                    uncompacted += old_cmd.len;
+                }
             }
-        } else {
-            let wal_file_path = dir_path.join("wal.0");
-            let file = OpenOptions::new()
-                .create(true)
-                .read(true)
-                .write(true)
-                .open(&wal_file_path)
-                .expect("Unable to create wal file");
-            Wal {
-                size: 0,
-                path: wal_file_path,
-                file: Arc::new(Mutex::new(file)),
+            Command::Remove { key } => {
+                if let Some(old_cmd) = index.remove(&key) {
+                    uncompacted += old_cmd.len;
+                }
+                // the "remove" command itself can be deleted in the next compaction.
+                // so we add its length to `uncompacted`.
+                uncompacted += new_pos - pos;
             }
         }
+        pos = new_pos;
+    }
+    Ok(uncompacted)
+}
+
+fn log_path(dir: &Path, gen: u64) -> PathBuf {
+    dir.join(format!("{}.log", gen))
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+enum Command {
+    Set { key: String, value: String },
+    Remove { key: String },
+}
+
+impl Command {
+    fn set(key: String, value: String) -> Command {
+        Command::Set { key, value }
     }
 
-    pub fn get_path(&self) -> PathBuf {
-        self.path.clone()
+    fn remove(key: String) -> Command {
+        Command::Remove { key }
     }
+}
 
-    pub fn set_path(&mut self, path: PathBuf) {
-        self.path = path;
+struct CommandPos {
+    gen: u64,
+    pos: u64,
+    len: u64,
+}
+
+impl From<(u64, Range<u64>)> for CommandPos {
+    fn from((gen, range): (u64, Range<u64>)) -> Self {
+        CommandPos {
+            gen: gen,
+            pos: range.start,
+            len: range.end - range.start,
+        }
     }
+}
 
-    pub fn append(&mut self, bytes: &[u8]) -> Result<u64, KvsError> {
-        let mut file = self.file.lock().unwrap();
-        let offset = file.seek(SeekFrom::End(0))?;
+struct BufReaderWithPos<R: Read + Seek> {
+    reader: BufReader<R>,
+    pos: u64,
+}
 
-        let bytes_len = (bytes.len() as u16).to_be_bytes();
-        file.write_all(&bytes_len)?;
-        file.write_all(bytes)?;
-        file.flush()?;
-        self.size += (bytes_len.len() + bytes.len()) as u64;
-
-        Ok(offset)
-    }
-
-    pub fn read_offset(&mut self, offset: u64) -> Result<WalRow, KvsError> {
-        // let mut file = OpenOptions::new().read(true).open(&self.path)?;
-        let mut file = self.file.lock().unwrap();
-        file.seek(SeekFrom::Start(offset))?;
-        let mut length_bytes = [0u8; 2];
-        file.read_exact(&mut length_bytes)?;
-        let length = u16::from_be_bytes(length_bytes) as usize;
-
-        let mut buffer = vec![0u8; length];
-        file.read_exact(&mut buffer)?;
-
-        Ok(WalRow {
-            length: length_bytes.to_vec(),
-            value: buffer,
+impl<R: Read + Seek> BufReaderWithPos<R> {
+    fn new(mut inner: R) -> Result<Self> {
+        let pos = inner.seek(SeekFrom::Current(0))?;
+        Ok(BufReaderWithPos {
+            reader: BufReader::new(inner),
+            pos,
         })
+    }
+}
+
+impl<R: Read + Seek> Read for BufReaderWithPos<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let len = self.reader.read(buf)?;
+        self.pos += len as u64;
+        Ok(len)
+    }
+}
+
+impl<R: Read + Seek> Seek for BufReaderWithPos<R> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.pos = self.reader.seek(pos)?;
+        Ok(self.pos)
+    }
+}
+
+struct BufWriterWithPos<W: Write + Seek> {
+    writer: BufWriter<W>,
+    pos: u64,
+}
+
+impl<W: Write + Seek> BufWriterWithPos<W> {
+    pub fn new(mut inner: W) -> Result<Self> {
+        let pos = inner.seek(SeekFrom::Current(0))?;
+        Ok(BufWriterWithPos {
+            writer: BufWriter::new(inner),
+            pos,
+        })
+    }
+}
+
+impl<W: Write + Seek> Write for BufWriterWithPos<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let len = self.writer.write(buf)?;
+        self.pos += len as u64;
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+impl<W: Write + Seek> Seek for BufWriterWithPos<W> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.pos = self.writer.seek(pos)?;
+        Ok(self.pos)
     }
 }
