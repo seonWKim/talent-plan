@@ -39,13 +39,12 @@ impl KvStore {
 
     /// Get a value using the key
     pub fn get(&mut self, key: String) -> Result<Option<String>, KvStoreError> {
-        let offset = match self.key_offset.get(&key) {
-            Some(&offset) => offset,
-            None => return Ok(None),
-        };
-
-        let record = self.read_offset(offset)?;
-        Ok(Some(record.v))
+        if let Some(&offset) = self.key_offset.get(&key) {
+            let record = self.read_offset(offset)?;
+            Ok(Some(record.v))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Set a value
@@ -83,7 +82,6 @@ impl KvStore {
         loop {
             match self.wal.read_offset(offset) {
                 Ok(wal_row) => {
-                    let length = wal_row.length.len();
                     let value = wal_row.value;
                     let record: Record = serde_json::from_slice(&value)?;
 
@@ -92,7 +90,7 @@ impl KvStore {
                     } else {
                         self.key_offset.insert(record.k.to_owned(), offset);
                     }
-                    offset += (length + value.len()) as u64;
+                    offset += (wal_row.length.len() + value.len()) as u64;
                 }
                 Err(_) => break,
             }
@@ -107,7 +105,9 @@ impl KvStore {
                 let record: Record = serde_json::from_slice(&wal_row.value)?;
                 Ok(record)
             }
-            Err(e) => Err(e)
+            Err(e) => {
+                Err(e)
+            }
         }
     }
 }

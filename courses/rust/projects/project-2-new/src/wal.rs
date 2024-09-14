@@ -2,11 +2,12 @@ use crate::KvStoreError;
 use std::fs::{metadata, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 pub struct Wal {
     size: u64,
     path: PathBuf,
-    file: File,
+    file: Arc<Mutex<File>>,
 }
 
 pub struct WalRow {
@@ -43,7 +44,7 @@ impl Wal {
             Wal {
                 size,
                 path: wal_file,
-                file,
+                file: Arc::new(Mutex::new(file)),
             }
         } else {
             let wal_file_path = dir_path.join("wal.0");
@@ -51,7 +52,7 @@ impl Wal {
             Wal {
                 size: 0,
                 path: wal_file_path,
-                file,
+                file: Arc::new(Mutex::new(file)),
             }
         }
     }
@@ -65,27 +66,27 @@ impl Wal {
     }
 
     pub fn append(&mut self, bytes: &[u8]) -> Result<u64, KvStoreError> {
-        let offset = self.file.seek(SeekFrom::End(0))?;
+        let mut file = self.file.lock().unwrap();
+        let offset = file.seek(SeekFrom::End(0))?;
 
         let bytes_len = (bytes.len() as u16).to_be_bytes();
-        self.file.write_all(&bytes_len)?;
-        self.file.write_all(bytes)?;
-        self.file.flush()?;
-        
+        file.write_all(&bytes_len)?;
+        file.write_all(bytes)?;
+        file.flush()?;
         self.size += (bytes_len.len() + bytes.len()) as u64;
 
         Ok(offset)
     }
 
     pub fn read_offset(&mut self, offset: u64) -> Result<WalRow, KvStoreError> {
-        self.file.seek(SeekFrom::Start(offset))?;
-
+        let mut file = OpenOptions::new().read(true).open(&self.path)?;
+        file.seek(SeekFrom::Start(offset))?;
         let mut length_bytes = [0u8; 2];
-        self.file.read_exact(&mut length_bytes)?;
+        file.read_exact(&mut length_bytes)?;
         let length = u16::from_be_bytes(length_bytes) as usize;
 
         let mut buffer = vec![0u8; length];
-        self.file.read_exact(&mut buffer)?;
+        file.read_exact(&mut buffer)?;
 
         Ok(WalRow {
             length: length_bytes.to_vec(),
