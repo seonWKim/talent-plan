@@ -26,7 +26,7 @@ impl KvStore {
         KvStore {
             dir_path: path.clone(),
             key_offset: HashMap::new(),
-            wal: Wal::new(path),
+            wal: Wal::initialize(path),
         }
     }
 
@@ -73,8 +73,30 @@ impl KvStore {
     fn append_to_wal(&mut self, key: String, value: String, r: bool) -> Result<u64, KvStoreError> {
         let record = Record { k: key.to_owned(), v: value, r };
         let serialized = serde_json::to_string(&record)?;
+        let serialized_bytes = serialized.as_bytes();
 
-        self.wal.append(&serialized.as_bytes())
+        if self.wal.size + serialized_bytes.len() as u64 > 1_000_000 {
+            self.compact()?;
+        }
+
+        self.wal.append(&serialized_bytes)
+    }
+
+    fn compact(&mut self) -> Result<(), KvStoreError> {
+        // create a new wal
+        let mut new_wal = Wal::new(self.dir_path.clone());
+
+        // append to new wal
+        for (_, &offset) in &self.key_offset {
+            let row = self.wal.read_offset(offset)?;
+            new_wal.append(row.value.as_slice())?;
+        }
+
+        let old_wal_path = &self.wal.get_path();
+        self.wal = new_wal;
+        std::fs::remove_file(old_wal_path)?;
+
+        Ok(())
     }
 
     fn build_index(&mut self) -> Result<(), KvStoreError> {

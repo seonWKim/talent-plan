@@ -1,11 +1,12 @@
 use crate::KvStoreError;
+use std::fs;
 use std::fs::{metadata, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub struct Wal {
-    size: u64,
+    pub(crate) size: u64,
     path: PathBuf,
     file: Arc<Mutex<File>>,
 }
@@ -18,6 +19,24 @@ pub struct WalRow {
 impl Wal {
     // supports single wal file
     pub(crate) fn new(dir_path: PathBuf) -> Self {
+        let next_index = fs::read_dir(&dir_path)
+            .expect("Failed to read directory")
+            .filter_map(|entry| {
+                entry.ok()?.path().file_name()?.to_str()?.strip_prefix("wal.")?.parse::<u64>().ok()
+            })
+            .max()
+            .map_or(0, |index| index + 1);
+
+        let wal_file = dir_path.join(format!("wal.{}", next_index));
+        let file = OpenOptions::new().create(true).append(true).open(&wal_file).expect("Unable to open wal file");
+        Wal {
+            size: 0,
+            path: wal_file,
+            file: Arc::new(Mutex::new(file)),
+        }
+    }
+
+    pub fn initialize(dir_path: PathBuf) -> Wal {
         let mut wal_files: Vec<PathBuf> = std::fs::read_dir(&dir_path)
             .expect("Failed to read directory")
             .filter_map(|entry| {
