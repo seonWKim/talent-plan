@@ -22,13 +22,25 @@ impl Wal {
         let next_index = fs::read_dir(&dir_path)
             .expect("Failed to read directory")
             .filter_map(|entry| {
-                entry.ok()?.path().file_name()?.to_str()?.strip_prefix("wal.")?.parse::<u64>().ok()
+                entry
+                    .ok()?
+                    .path()
+                    .file_name()?
+                    .to_str()?
+                    .strip_prefix("wal.")?
+                    .parse::<u64>()
+                    .ok()
             })
             .max()
             .map_or(0, |index| index + 1);
 
         let wal_file = dir_path.join(format!("wal.{}", next_index));
-        let file = OpenOptions::new().create(true).append(true).open(&wal_file).expect("Unable to open wal file");
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&wal_file)
+            .expect("Unable to open wal file");
         Wal {
             size: 0,
             path: wal_file,
@@ -58,8 +70,14 @@ impl Wal {
         });
 
         if let Some(wal_file) = wal_files.pop() {
-            let size = metadata(&wal_file).expect("Unable to get file metadata").len();
-            let file = OpenOptions::new().read(true).append(true).open(&wal_file).expect("Unable to open wal file");
+            let size = metadata(&wal_file)
+                .expect("Unable to get file metadata")
+                .len();
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(&wal_file)
+                .expect("Unable to open wal file");
             Wal {
                 size,
                 path: wal_file,
@@ -67,7 +85,12 @@ impl Wal {
             }
         } else {
             let wal_file_path = dir_path.join("wal.0");
-            let file = OpenOptions::new().create(true).write(true).open(&wal_file_path).expect("Unable to create wal file");
+            let file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(&wal_file_path)
+                .expect("Unable to create wal file");
             Wal {
                 size: 0,
                 path: wal_file_path,
@@ -98,7 +121,8 @@ impl Wal {
     }
 
     pub fn read_offset(&mut self, offset: u64) -> Result<WalRow, KvStoreError> {
-        let mut file = OpenOptions::new().read(true).open(&self.path)?;
+        // let mut file = OpenOptions::new().read(true).open(&self.path)?;
+        let mut file = self.file.lock().unwrap();
         file.seek(SeekFrom::Start(offset))?;
         let mut length_bytes = [0u8; 2];
         file.read_exact(&mut length_bytes)?;

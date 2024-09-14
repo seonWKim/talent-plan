@@ -17,7 +17,7 @@ pub struct KvStore {
 pub struct Record {
     k: String, // key
     v: String, // value
-    r: bool, // remove flag
+    r: bool,   // remove flag
 }
 
 /// KvStore implementation
@@ -54,7 +54,7 @@ impl KvStore {
                 self.key_offset.insert(key, offset);
                 Ok(())
             }
-            Err(_) => Err(KvStoreError::WalAppendFailed)
+            Err(_) => Err(KvStoreError::WalAppendFailed),
         }
     }
 
@@ -71,7 +71,11 @@ impl KvStore {
     }
 
     fn append_to_wal(&mut self, key: String, value: String, r: bool) -> Result<u64, KvStoreError> {
-        let record = Record { k: key.to_owned(), v: value, r };
+        let record = Record {
+            k: key.to_owned(),
+            v: value,
+            r,
+        };
         let serialized = serde_json::to_string(&record)?;
         let serialized_bytes = serialized.as_bytes();
 
@@ -127,9 +131,7 @@ impl KvStore {
                 let record: Record = serde_json::from_slice(&wal_row.value)?;
                 Ok(record)
             }
-            Err(e) => {
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 }
@@ -141,14 +143,14 @@ pub enum KvStoreError {
     #[fail(display = "Invalid key: {}", key)]
     InvalidKey {
         /// Key
-        key: String
+        key: String,
     },
 
     /// Invalid offset
     #[fail(display = "Invalid offset: {}", offset)]
     InvalidOffset {
         /// offset
-        offset: u64
+        offset: u64,
     },
 
     /// Wal file not found
