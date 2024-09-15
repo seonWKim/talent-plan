@@ -28,7 +28,7 @@ fn main() {
         println!("{}", env!("CARGO_PKG_VERSION"));
     }
 
-    error!(
+    info!(
         "Starting kvs-server on {} using {} engine. Version: {}c",
         config.addr,
         config.engine,
