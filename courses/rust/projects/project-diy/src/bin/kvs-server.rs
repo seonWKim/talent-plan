@@ -1,6 +1,7 @@
+use std::io::{BufReader, Read};
 use env_logger::Env;
 use log::{error, info, log};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::process::exit;
 use structopt::StructOpt;
 
@@ -34,4 +35,32 @@ fn main() {
         config.engine,
         env!("CARGO_PKG_VERSION")
     );
+
+    let listener = TcpListener::bind(config.addr).unwrap_or_else(|e| {
+        error!("Failed to bind to {}: {}", config.addr, e);
+        exit(1);
+    });
+
+    info!("Server is listening on {}", config.addr);
+
+    // TODO: create a kvs store if not exists
+    match listener.accept() {
+        Ok((stream, _)) => {
+            let mut reader = BufReader::new(&stream);
+            let mut buffer = String::new();
+            match reader.read_to_string(&mut buffer) {
+                Ok(_) => {
+                    info!("Received command: {}", buffer);
+                }
+                Err(e) => {
+                    error!("Failed to read from connection: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            error!("Connection failed: {}", e);
+        }
+    }
+
+    exit(0);
 }

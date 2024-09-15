@@ -1,5 +1,6 @@
-use kvs::engines::kvs::KvStore;
-use std::path::PathBuf;
+use log::{error, info};
+use std::io::Write;
+use std::net::{SocketAddr, TcpStream};
 use std::process::exit;
 use structopt::StructOpt;
 
@@ -7,10 +8,13 @@ use structopt::StructOpt;
 #[structopt(name = "kvs-client", about = "A key-value store")]
 struct Config {
     #[structopt(subcommand)]
-    cmd: Command,
+    cmd: Option<Command>,
 
-    #[structopt(parse(from_os_str), short, long, default_value = ".")]
-    current_dir: PathBuf,
+    #[structopt(long, default_value = "127.0.0.1:4000")]
+    addr: SocketAddr,
+
+    #[structopt(short = "V", long = "version")]
+    version: bool,
 }
 
 #[derive(StructOpt, Debug)]
@@ -27,31 +31,34 @@ enum Command {
 
 fn main() {
     let config = Config::from_args();
-    let current_dir = config.current_dir;
-    let mut kvs = KvStore::open(current_dir.as_path()).expect("Unable to create kvs store");
-
-    match config.cmd {
-        Command::Set { key, value } => match kvs.set(key, value) {
-            Ok(_) => exit(0),
-            Err(_) => exit(1),
-        },
-        Command::Get { key } => match kvs.get(key) {
-            Ok(Some(v)) => {
-                println!("{}", v);
-                exit(0);
-            }
-            Ok(None) => {
-                println!("Key not found");
-                exit(0);
-            }
-            Err(_) => exit(1),
-        },
-        Command::Rm { key } => match kvs.remove(key) {
-            Ok(v) => {}
-            Err(_) => {
-                println!("Key not found");
-                exit(1)
-            }
-        },
+    if config.version {
+        println!("Running client version {}", env!("CARGO_PKG_VERSION"));
+        exit(0);
     }
+
+    if let Some(cmd) = config.cmd {
+        info!("Trying to connect to server at {}", config.addr);
+        let mut stream = TcpStream::connect(config.addr).expect("Could not connect to the server");
+
+        info!("Connected, sending command: {:?}", cmd);
+        match cmd {
+            Command::Set { key, value } => {
+                let command = format!("SET {} {}\n", key, value);
+                stream.write_all(command.as_bytes()).expect("Failed to send SET command");
+            }
+            Command::Get { key } => {
+                let command = format!("GET {}\n", key);
+                stream.write_all(command.as_bytes()).expect("Failed to send GET command");
+            }
+            Command::Rm { key } => {
+                let command = format!("RM {}\n", key);
+                stream.write_all(command.as_bytes()).expect("Failed to send RM command");
+            }
+        }
+    } else {
+        error!("No command provided");
+        exit(1)
+    }
+
+    exit(0);
 }
