@@ -43,7 +43,7 @@ fn main() {
 
     info!("Server is listening on {}", config.addr);
 
-    // TODO: create a kvs store if not exists
+    // TODO: create a KvStore if not exists
     match listener.accept() {
         Ok((stream, _)) => {
             let mut reader = BufReader::new(&stream);
