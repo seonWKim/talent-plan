@@ -1,5 +1,6 @@
 use failure::Fail;
 use std::io;
+use std::string::FromUtf8Error;
 
 /// Error type for kvs.
 #[derive(Fail, Debug)]
@@ -17,6 +18,10 @@ pub enum KvsError {
     /// It indicated a corrupted log or a program bug.
     #[fail(display = "Unexpected command type")]
     UnexpectedCommandType,
+
+    /// Sled error
+    #[fail(display = "Sled error")]
+    Sled
 }
 
 impl From<io::Error> for KvsError {
@@ -29,6 +34,14 @@ impl From<serde_json::Error> for KvsError {
     fn from(err: serde_json::Error) -> KvsError {
         KvsError::Serde(err)
     }
+}
+
+impl From<sled::Error> for KvsError {
+    fn from(_err: sled::Error) -> KvsError { KvsError::Sled }
+}
+
+impl From<FromUtf8Error> for KvsError {
+    fn from(_err: FromUtf8Error) -> KvsError { KvsError::Sled }
 }
 
 /// Result type for kvs.

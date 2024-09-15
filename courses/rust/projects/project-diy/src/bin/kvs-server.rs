@@ -3,7 +3,9 @@ use env_logger::Env;
 use log::{error, info, log};
 use std::net::{SocketAddr, TcpListener};
 use std::process::exit;
+use serde_json::from_str;
 use structopt::StructOpt;
+use kvs::command::Command;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "kvs-server", about = "A key-value store server")]
@@ -50,7 +52,14 @@ fn main() {
             let mut buffer = String::new();
             match reader.read_to_string(&mut buffer) {
                 Ok(_) => {
-                    info!("Received command: {}", buffer);
+                    match from_str::<Command>(&buffer) {
+                        Ok(command) => {
+                            info!("Received command: {:?}", command);
+                        }
+                        Err(e) => {
+                            error!("Failed to deserialize command: {}", e);
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to read from connection: {}", e);

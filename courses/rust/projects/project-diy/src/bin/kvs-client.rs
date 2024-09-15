@@ -3,6 +3,7 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::process::exit;
 use structopt::StructOpt;
+use kvs::command::Command;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "kvs-client", about = "A key-value store")]
@@ -17,18 +18,6 @@ struct Config {
     version: bool,
 }
 
-#[derive(StructOpt, Debug)]
-enum Command {
-    #[structopt(about = "Set the value of a key to a string")]
-    Set { key: String, value: String },
-
-    #[structopt(about = "Get the string value of a given string key")]
-    Get { key: String },
-
-    #[structopt(about = "Remove a given key")]
-    Rm { key: String },
-}
-
 fn main() {
     let config = Config::from_args();
     if config.version {
@@ -41,20 +30,8 @@ fn main() {
         let mut stream = TcpStream::connect(config.addr).expect("Could not connect to the server");
 
         info!("Connected, sending command: {:?}", cmd);
-        match cmd {
-            Command::Set { key, value } => {
-                let command = format!("SET {} {}\n", key, value);
-                stream.write_all(command.as_bytes()).expect("Failed to send SET command");
-            }
-            Command::Get { key } => {
-                let command = format!("GET {}\n", key);
-                stream.write_all(command.as_bytes()).expect("Failed to send GET command");
-            }
-            Command::Rm { key } => {
-                let command = format!("RM {}\n", key);
-                stream.write_all(command.as_bytes()).expect("Failed to send RM command");
-            }
-        }
+        let serialized_cmd = serde_json::to_string(&cmd).expect("Failed to serialize command");
+        stream.write_all(serialized_cmd.as_bytes()).expect("Failed to send command");
     } else {
         error!("No command provided");
         exit(1)
