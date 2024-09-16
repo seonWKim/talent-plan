@@ -32,7 +32,7 @@ impl KvsClient {
     }
 
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        serde_json::to_writer(&mut self.writer, &Request::Set { key, value });
+        serde_json::to_writer(&mut self.writer, &Request::Set { key, value })?;
         self.writer.flush()?;
         let resp = SetResponse::deserialize(&mut self.reader)?;
         match resp {
@@ -42,7 +42,7 @@ impl KvsClient {
     }
 
     pub fn remove(&mut self, key: String) -> Result<()> {
-        serde_json::to_writer(&mut self.writer, &Request::Remove { key });
+        serde_json::to_writer(&mut self.writer, &Request::Remove { key })?;
         self.writer.flush()?;
         let resp = RemoveResponse::deserialize(&mut self.reader)?;
         match resp {

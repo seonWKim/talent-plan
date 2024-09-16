@@ -1,16 +1,12 @@
 use crate::error::Result;
 use crate::server::KvsServer;
 use clap::arg_enum;
-use env_logger::Env;
 use kvs::engines::{KvStore, KvsEngine, SledKvsEngine};
 use kvs::*;
-use log::{error, info, log, warn, LevelFilter};
-use serde_json::from_str;
+use log::{error, info, warn, LevelFilter};
 use std::env::current_dir;
-use std::fmt::format;
 use std::fs;
-use std::io::{BufReader, Read};
-use std::net::{SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::process::exit;
 use structopt::StructOpt;
 
