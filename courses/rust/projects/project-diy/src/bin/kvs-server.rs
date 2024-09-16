@@ -1,11 +1,11 @@
-use std::io::{BufReader, Read};
 use env_logger::Env;
+use kvs::command::Command;
 use log::{error, info, log};
+use serde_json::from_str;
+use std::io::{BufReader, Read};
 use std::net::{SocketAddr, TcpListener};
 use std::process::exit;
-use serde_json::from_str;
 use structopt::StructOpt;
-use kvs::command::Command;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "kvs-server", about = "A key-value store server")]
@@ -46,28 +46,31 @@ fn main() {
     info!("Server is listening on {}", config.addr);
 
     // TODO: create a KvStore if not exists
-    match listener.accept() {
-        Ok((stream, _)) => {
-            let mut reader = BufReader::new(&stream);
-            let mut buffer = String::new();
-            match reader.read_to_string(&mut buffer) {
-                Ok(_) => {
-                    match from_str::<Command>(&buffer) {
-                        Ok(command) => {
-                            info!("Received command: {:?}", command);
-                        }
-                        Err(e) => {
-                            error!("Failed to deserialize command: {}", e);
+
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let mut reader = BufReader::new(&stream);
+                let mut buffer = String::new();
+                match reader.read_to_string(&mut buffer) {
+                    Ok(_) => {
+                        match from_str::<Command>(&buffer) {
+                            Ok(command) => {
+                                info!("Received command: {:?}", command);
+                            }
+                            Err(e) => {
+                                error!("Failed to deserialize command: {}", e);
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    error!("Failed to read from connection: {}", e);
+                    Err(e) => {
+                        error!("Failed to read from connection: {}", e);
+                    }
                 }
             }
-        }
-        Err(e) => {
-            error!("Connection failed: {}", e);
+            Err(e) => {
+                error!("Connection failed: {}", e);
+            }
         }
     }
 
