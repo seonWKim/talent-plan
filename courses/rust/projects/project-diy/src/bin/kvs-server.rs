@@ -1,78 +1,103 @@
+use crate::error::Result;
+use crate::server::KvsServer;
+use clap::arg_enum;
 use env_logger::Env;
-use kvs::command::Command;
-use log::{error, info, log};
+use kvs::engines::{KvStore, KvsEngine, SledKvsEngine};
+use kvs::*;
+use log::{error, info, log, warn, LevelFilter};
 use serde_json::from_str;
+use std::env::current_dir;
+use std::fmt::format;
+use std::fs;
 use std::io::{BufReader, Read};
 use std::net::{SocketAddr, TcpListener};
 use std::process::exit;
 use structopt::StructOpt;
 
+const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
+const DEFAULT_ENGINE: Engine = Engine::kvs;
+
 #[derive(StructOpt, Debug)]
-#[structopt(name = "kvs-server", about = "A key-value store server")]
-struct Config {
-    /// IP address and port to bind to
-    #[structopt(long, default_value = "127.0.0.1:4000")]
+#[structopt(name = "kvs-server")]
+struct Opt {
+    #[structopt(
+        long,
+        help = "Sets the listening address",
+        value_name = "IP:PORT",
+        default_value = DEFAULT_LISTENING_ADDRESS,
+        parse(try_from_str)
+    )]
     addr: SocketAddr,
+    #[structopt(
+        long,
+        help = "Sets the storage engine",
+        value_name = "ENGINE-NAME",
+        possible_values = &Engine::variants()
+    )]
+    engine: Option<Engine>,
+}
 
-    /// Storage engine to use (e.g., kvs, sled)
-    #[structopt(long, default_value = "kvs")]
-    engine: String,
-
-    /// Print version information
-    #[structopt(short = "V", long = "version")]
-    version: bool,
+arg_enum! {
+    #[allow(non_camel_case_types)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    enum Engine {
+        kvs,
+        sled
+    }
 }
 
 fn main() {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    env_logger::builder().filter_level(LevelFilter::Info).init();
+    let mut opt = Opt::from_args();
+    let res = current_engine().and_then(move |curr_engine| {
+        if opt.engine.is_none() {
+            opt.engine = curr_engine;
+        }
 
-    let config = Config::from_args();
-    if config.version {
-        println!("{}", env!("CARGO_PKG_VERSION"));
-    }
+        if curr_engine.is_some() && opt.engine != curr_engine {
+            error!("Wrong engine!");
+            exit(1);
+        }
 
-    info!(
-        "Starting kvs-server on {} using {} engine. Version: {}c",
-        config.addr,
-        config.engine,
-        env!("CARGO_PKG_VERSION")
-    );
-
-    let listener = TcpListener::bind(config.addr).unwrap_or_else(|e| {
-        error!("Failed to bind to {}: {}", config.addr, e);
-        exit(1);
+        run(opt)
     });
 
-    info!("Server is listening on {}", config.addr);
+    if let Err(e) = res {
+        error!("{}", e);
+        exit(1);
+    }
+}
 
-    // TODO: create a KvStore if not exists
+fn run(opt: Opt) -> Result<()> {
+    let engine = opt.engine.unwrap_or(DEFAULT_ENGINE);
+    info!("kvs-server {}", env!("CARGO_PKG_VERSION"));
+    info!("Storage engine: {}", engine);
+    info!("Listening on {}", opt.addr);
 
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let mut reader = BufReader::new(&stream);
-                let mut buffer = String::new();
-                match reader.read_to_string(&mut buffer) {
-                    Ok(_) => {
-                        match from_str::<Command>(&buffer) {
-                            Ok(command) => {
-                                info!("Received command: {:?}", command);
-                            }
-                            Err(e) => {
-                                error!("Failed to deserialize command: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to read from connection: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Connection failed: {}", e);
-            }
-        }
+    fs::write(current_dir()?.join("engine"), format!("{}", engine))?;
+
+    match engine {
+        Engine::kvs => run_with_engine(KvStore::open(current_dir()?)?, opt.addr),
+        Engine::sled => run_with_engine(SledKvsEngine::new(sled::open(current_dir()?)?), opt.addr),
+    }
+}
+
+fn run_with_engine<E: KvsEngine>(engine: E, addr: SocketAddr) -> Result<()> {
+    let server = KvsServer::new(engine);
+    server.run(addr)
+}
+
+fn current_engine() -> Result<Option<Engine>> {
+    let engine = current_dir()?.join("engine");
+    if !engine.exists() {
+        return Ok(None);
     }
 
-    exit(0);
+    match fs::read_to_string(engine)?.parse() {
+        Ok(engine) => Ok(Some(engine)),
+        Err(e) => {
+            warn!("The content of engine file is invalid: {}", e);
+            Ok(None)
+        }
+    }
 }

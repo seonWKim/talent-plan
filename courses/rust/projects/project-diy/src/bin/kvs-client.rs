@@ -1,41 +1,95 @@
-use log::{error, info};
-use std::io::Write;
-use std::net::{SocketAddr, TcpStream};
+use clap::AppSettings; 
+use kvs::client::KvsClient;
+use kvs::error::Result;
+use std::net::SocketAddr;
 use std::process::exit;
 use structopt::StructOpt;
-use kvs::command::Command;
+
+const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
+const ADDRESS_FORMAT: &str = "IP:PORT";
 
 #[derive(StructOpt, Debug)]
-#[structopt(name = "kvs-client", about = "A key-value store")]
-struct Config {
+#[structopt(
+    name = "kvs-client",
+    global_settings = &[AppSettings::DisableHelpSubcommand, AppSettings::VersionlessSubcommands]
+    )]
+struct Opt {
     #[structopt(subcommand)]
-    cmd: Option<Command>,
+    command: Command,
+}
 
-    #[structopt(long, default_value = "127.0.0.1:4000")]
-    addr: SocketAddr,
-
-    #[structopt(short = "V", long = "version")]
-    version: bool,
+#[derive(StructOpt, Debug)]
+enum Command {
+    #[structopt(name = "get", about = "Get the string value of a given string key")]
+    Get {
+        #[structopt(name = "KEY", help = "A string key")]
+        key: String,
+        #[structopt(
+            long,
+            help = "Sets the server address",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS,
+            parse(try_from_str)
+        )]
+        addr: SocketAddr,
+    },
+    #[structopt(name = "set", about = "Set the value of a string key to a string")]
+    Set {
+        #[structopt(name = "KEY", help = "A string key")]
+        key: String,
+        #[structopt(name = "VALUE", help = "The string value of the key")]
+        value: String,
+        #[structopt(
+            long,
+            help = "Sets the server address",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS,
+            parse(try_from_str)
+        )]
+        addr: SocketAddr,
+    },
+    #[structopt(name = "rm", about = "Remove a given string key")]
+    Remove {
+        #[structopt(name = "KEY", help = "A string key")]
+        key: String,
+        #[structopt(
+            long,
+            help = "Sets the server address",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS,
+            parse(try_from_str)
+        )]
+        addr: SocketAddr,
+    },
 }
 
 fn main() {
-    let config = Config::from_args();
-    if config.version {
-        println!("Running client version {}", env!("CARGO_PKG_VERSION"));
-        exit(0);
+    let opt = Opt::from_args();
+    if let Err(e) = run(opt) {
+        eprintln!("{}", e);
+        exit(1);
     }
-
-    if let Some(cmd) = config.cmd {
-        info!("Trying to connect to server at {}", config.addr);
-        let mut stream = TcpStream::connect(config.addr).expect("Could not connect to the server");
-
-        info!("Connected, sending command: {:?}", cmd);
-        let serialized_cmd = serde_json::to_string(&cmd).expect("Failed to serialize command");
-        stream.write_all(serialized_cmd.as_bytes()).expect("Failed to send command");
-    } else {
-        error!("No command provided");
-        exit(1)
-    }
-
-    exit(0);
 }
+
+fn run(opt: Opt) -> Result<()> {
+    match opt.command {
+        Command::Get { key, addr } => {
+            let mut client = KvsClient::connect(addr)?;
+            if let Some(value) = client.get(key)? {
+                println!("{}", value);
+            } else {
+                println!("Key not found");
+            }
+        }
+        Command::Set { key, value, addr } => {
+            let mut client = KvsClient::connect(addr)?;
+            client.set(key, value)?;
+        }
+        Command::Remove { key, addr } => {
+            let mut client = KvsClient::connect(addr)?;
+            client.remove(key)?;
+        }
+    }
+    Ok(())
+}
+
