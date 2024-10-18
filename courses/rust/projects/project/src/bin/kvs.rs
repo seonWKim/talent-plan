@@ -3,10 +3,8 @@
 /// kvs set <KEY> <VALUE>
 /// kvs rm <KEY>
 /// kvs -V : CARGO_PKG_VERSION
-
 use clap::{App, AppSettings, Arg, SubCommand};
 use std::process::exit;
-
 
 fn main() {
     let matches = App::new(env!("CARGO_PKG_NAME"))

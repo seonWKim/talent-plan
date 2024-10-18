@@ -9,7 +9,7 @@ impl KvStore {
     /// Create new KvStore
     pub fn new() -> Self {
         Self {
-            map: HashMap::new()
+            map: HashMap::new(),
         }
     }
 
@@ -17,7 +17,7 @@ impl KvStore {
     pub fn get(&self, key: String) -> Option<String> {
         match self.map.get(&key) {
             Some(s) => Some(s.to_owned()),
-            None => None
+            None => None,
         }
     }
 
